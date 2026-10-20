@@ -1,0 +1,15 @@
+[project]
+name = "gcs-archive-dag-bundle"
+version = "0.1.0"
+description = "Proof of concept: stage an Airflow DAG bundle from a single GCS archive object instead of one request per file"
+requires-python = ">=3.10"
+# The provider is installed separately (see the Dockerfile). Declaring it
+# here would pull the full Google provider, including Ray and every product
+# client, which this bundle class does not import.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

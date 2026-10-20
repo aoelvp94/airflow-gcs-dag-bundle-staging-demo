@@ -1,0 +1,3 @@
+# The Google provider and its GCS import closure are installed from the
+# Dockerfile, not here. A bare apache-airflow-providers-google pin would also
+# install Ray, pandas, and every Google product client.

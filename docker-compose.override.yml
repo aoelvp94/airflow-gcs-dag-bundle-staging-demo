@@ -1,0 +1,38 @@
+services:
+  fake-gcs:
+    image: fsouza/fake-gcs-server:1.52.3
+    container_name: gcs-bundle-fake-gcs
+    command:
+      - -scheme
+      - http
+      - -backend
+      - memory
+      - -port
+      - "4443"
+      - -external-url
+      - http://gcs-proxy:8888
+      - -public-host
+      - gcs-proxy:8888
+      - -log-level
+      - warning
+    ports:
+      - "4443:4443"
+    networks:
+      - airflow
+
+  gcs-proxy:
+    image: python:3.13-alpine
+    container_name: gcs-bundle-proxy
+    environment:
+      UPSTREAM_HOST: fake-gcs
+      UPSTREAM_PORT: "4443"
+      LISTEN_PORT: "8888"
+    command: ["python", "/app/gcs_proxy.py"]
+    volumes:
+      - ./scripts/gcs_proxy.py:/app/gcs_proxy.py:ro
+    ports:
+      - "18888:8888"
+    depends_on:
+      - fake-gcs
+    networks:
+      - airflow

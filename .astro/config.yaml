@@ -1,0 +1,6 @@
+api-server:
+    port: "18080"
+postgres:
+    port: "15432"
+project:
+    name: airflow-gcs-dag-bundle-staging-demo
