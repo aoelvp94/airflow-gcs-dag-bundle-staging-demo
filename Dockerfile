@@ -5,6 +5,10 @@ FROM astrocrpublic.azurecr.io/runtime:3.3-7
 # only the import closure those modules need. A full provider install also
 # pulls Ray, pandas, and every Google product client, which this reproduction
 # never calls.
+#
+# Provider 22.3.0 has no GCSArchiveDagBundle. bundle_pkg vendors that class
+# (archive_object, ETag marker beside the bundle dir, empty-dir restage,
+# generation-pinned download) and re-exports the provider class when it exists.
 USER root
 RUN pip freeze > /tmp/existing.txt \
     && pip install --no-deps "apache-airflow-providers-google==22.3.0" \

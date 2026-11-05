@@ -22,7 +22,7 @@ import urllib.request
 
 from airflow.providers.google.cloud.bundles.gcs import GCSDagBundle
 
-from gcs_archive_bundle import GCSArchiveDagBundle
+from gcs_archive_bundle import ARCHIVE_CLASSPATH, GCSArchiveDagBundle
 
 METRICS_URL = "http://gcs-proxy:8888/__metrics"
 BUCKET = "dag-bundles"
@@ -48,6 +48,9 @@ def diff(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
 
 def run_cold(make_bundle) -> tuple[float, dict[str, int], int]:
     bundle = make_bundle()
+    # The archive ETag marker lives beside base_dir (.{name}/etag). Wiping only
+    # the bundle directory is the fresh-worker case: the marker can still match,
+    # and GCSArchiveDagBundle restages because the directory has no files.
     shutil.rmtree(bundle.base_dir, ignore_errors=True)
     before = gcs_request_counts()
     t0 = time.perf_counter()
@@ -89,7 +92,7 @@ def main() -> None:
         ),
     )
 
-    print("\n[2/2] GCSArchiveDagBundle — single tar.gz object")
+    print(f"\n[2/2] GCSArchiveDagBundle — single tar.gz object ({ARCHIVE_CLASSPATH})")
     archive = scenario(
         "single archive (GCSArchiveDagBundle)",
         lambda: GCSArchiveDagBundle(
