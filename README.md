@@ -98,42 +98,38 @@ localhost):
 Cold-staging benchmark, 3 rounds each (local dir wiped before every round)
 
 [1/2] stock GCSDagBundle — serial per-object sync
-  round 1:   1.10s   (download=400, list=2, bucket=1)
-  round 2:   0.93s   (download=400, list=2, bucket=1)
-  round 3:   1.52s   (download=400, list=2, bucket=1)
+  round 1:   0.87s   (download=400, list=2, bucket=1)
+  round 2:   0.82s   (download=400, list=2, bucket=1)
+  round 3:   0.80s   (download=400, list=2, bucket=1)
 
 [2/2] GCSArchiveDagBundle — single tar.gz object (gcs_archive_bundle.GCSArchiveDagBundle)
-  round 1:   0.17s   (download=1, metadata=2, bucket=1)
-  round 2:   0.20s   (download=1, metadata=2, bucket=1)
-  round 3:   0.40s   (download=1, metadata=2, bucket=1)
+  round 1:   0.06s   (download=1, metadata=1, bucket=1)
+  round 2:   0.06s   (download=1, metadata=1, bucket=1)
+  round 3:   0.06s   (download=1, metadata=1, bucket=1)
 
 ==========================================================================
 scenario                                     median  GCS reqs   files
 --------------------------------------------------------------------------
-per-object sync (stock GCSDagBundle)          1.10s       403     400
-single archive (GCSArchiveDagBundle)          0.20s         4     400
+per-object sync (stock GCSDagBundle)          0.82s       403     400
+single archive (GCSArchiveDagBundle)          0.06s         3     400
 ==========================================================================
 
-speedup: 5.4x   (every KubernetesExecutor task pod pays the cold-staging cost)
+speedup: 13.5x   (every KubernetesExecutor task pod pays the cold-staging cost)
 ```
 
-Those timings are from the earlier archive implementation on this machine
-(Airflow 3.3.1, provider `apache-airflow-providers-google` 22.3.0, fake-gcs
-1.52.3, everything on localhost). The per-object mix is unchanged: 1 bucket
+The request mix did not move between rounds. Stock cold staging is 1 bucket
 GET, 2 lists (the prefix check, then the refresh), and 400 media downloads.
-
-This revision's archive class does not probe `exists()` before `reload()`.
-A cold stage is 1 bucket GET, 1 metadata read (ETag and generation), and 1
-media download pinned with `ifGenerationMatch` — 3 calls. `just bench` wipes
-only the bundle directory. The ETag marker sits beside it
+This archive class does not probe `exists()` before `reload()`. A cold stage
+is 1 bucket GET, 1 metadata read (ETag and generation), and 1 media download
+pinned with `ifGenerationMatch` — 3 calls, matching the rounds above.
+`just bench` wipes only the bundle directory. The ETag marker sits beside it
 (`.{name}/etag`), and an empty directory is restaged, so each round still
-downloads the archive instead of skipping on a leftover marker. Re-run
-`just bench` for the numbers on your machine. The archive stays at that
-fixed call count against real GCS. The stock cost scales with file count
-times round-trip time.
+downloads the archive instead of skipping on a leftover marker. The archive
+stays at that fixed call count against real GCS. The stock cost scales with
+file count times round-trip time.
 
-Loopback fake-gcs makes each call about 3 ms, so the wall-clock ratio above
-is a floor. The S3 reproduction of the same 400 files was ~16 s against
+Loopback fake-gcs makes each stock call about 2 ms, so 13.5× wall clock is
+the floor. The S3 reproduction of the same 400 files was ~16 s against
 MinIO and 20+ s against real S3, because that path also HEAD-checks every
 object. Neither number is a cloud bill: nothing left the machine.
 
