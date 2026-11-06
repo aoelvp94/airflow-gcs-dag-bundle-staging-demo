@@ -41,13 +41,18 @@ bench rounds="3":
     fi
     exit "$status"
 
-# Show how the DAG processor staged the two live bundles
+# Show how the DAG processor staged the two live bundles.
+# Archive staging logs at debug ("Staged Dag bundle from archive").
 logs:
     #!/usr/bin/env bash
     set -euo pipefail
     dp=$(docker ps -a --filter name=airflow-gcs-dag-bundle-staging-demo | awk 'NR>1 && $NF ~ /dag-processor/ {print $NF; exit}')
     [ -n "$dp" ] || dp=$(docker ps --filter name=airflow-gcs-dag-bundle-staging-demo | awk 'NR>1 && $NF ~ /scheduler/ {print $NF; exit}')
-    docker logs "$dp" 2>&1 | grep -iE "staged|Downloading Dags|does not exist|archive" | tail -40
+    docker logs "$dp" 2>&1 | grep -iE "staged|Downloading Dags|does not exist|archive|archive_etag" | tail -40
+
+# Host check of the vendored upstream bundle module (no Docker)
+check:
+    python3 -m unittest tests.test_vendored_gcs_bundle
 
 # Watch every request the counting proxy forwards (Ctrl+C to stop)
 trace:

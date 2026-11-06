@@ -16,10 +16,13 @@ Archive staging is a separate class, `GCSArchiveDagBundle`, with
 ([`ad0592a`](https://github.com/apache/airflow/pull/73015/commits/ad0592a555cdc1110e006b5c8b989a5e02e634a6)).
 `GCSDagBundle` stays the prefix path and has no `archive_object` argument.
 The Google provider in this image (22.3.0) does not ship the archive class
-yet ([apache/airflow#75566](https://github.com/apache/airflow/pull/75566)),
-so `bundle_pkg/` vendors it. The live config uses that package. Importing it
-returns `airflow.providers.google.cloud.bundles.gcs.GCSArchiveDagBundle` once
-that class is installed; point the bundle classpath at the provider then.
+yet ([apache/airflow#75566](https://github.com/apache/airflow/pull/75566)).
+`vendor/gcs.py` is a verbatim copy of that pull request's tip
+[`acec0cf`](https://github.com/aoelvp94/airflow/commit/acec0cfed761a04d3dabd7b5851662198c792882)
+on `gcs-dag-bundle-archive-staging`, and the image overlays it onto
+`airflow.providers.google.cloud.bundles.gcs`. Both live bundles use that
+module. The ETag marker is `.archive_etag` inside the staged tree. The
+prefix class does not unlink a sibling `.{name}/etag`.
 
 Everything runs on your machine: `astro dev` (Airflow 3.3, same runtime as
 the S3 reproduction) plus
@@ -44,8 +47,9 @@ On a warm disk (the scheduler, after the first refresh) the stock loop is
 different but still per-object: `GCSHook` calls `blob.reload()` for every
 file that already exists, so an unchanged bundle still costs about N metadata
 GETs. The archive path re-reads one object's ETag. It skips the download when
-that ETag matches the marker beside the bundle directory and the directory
-still has files. An empty directory is restaged even when the ETag matches.
+that ETag matches `.archive_etag` inside the staged tree and the tree still
+has other files. A missing directory, or one that contains only the marker,
+is restaged even when the ETag matches.
 
 ## Why the same shape as S3
 
@@ -69,7 +73,7 @@ not depend on the emulator.
 - [Docker](https://docs.docker.com/get-docker/)
 - [Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli) (`brew install astro`)
 - [just](https://github.com/casey/just) (`brew install just`)
-- Python 3.10+ on the host (stdlib only, used to generate and seed the bundle)
+- Python 3.11.4+ on the host (stdlib only, used to generate and seed the bundle and to run `just check`; archive bundles require `tarfile` `filter="data"`)
 
 Host ports: Airflow UI `18080`, Postgres `15432`, fake-gcs `4443`, request
 counter `18888`. Chosen so this project can run next to another local Airflow.
@@ -122,11 +126,22 @@ GET, 2 lists (the prefix check, then the refresh), and 400 media downloads.
 This archive class does not probe `exists()` before `reload()`. A cold stage
 is 1 bucket GET, 1 metadata read (ETag and generation), and 1 media download
 pinned with `ifGenerationMatch` — 3 calls, matching the rounds above.
-`just bench` wipes only the bundle directory. The ETag marker sits beside it
-(`.{name}/etag`), and an empty directory is restaged, so each round still
-downloads the archive instead of skipping on a leftover marker. The archive
-stays at that fixed call count against real GCS. The stock cost scales with
-file count times round-trip time.
+`just bench` wipes only the bundle directory. The ETag marker is
+`.archive_etag` inside that directory, so the wipe removes it and each round
+downloads the archive. The prefix path does not unlink a sibling
+`.{name}/etag`. Staging temp dirs still live beside the tree, in
+`.{name}/`, and that directory is not an ETag marker. When the same
+directory is later refreshed as a prefix bundle,
+`sync_to_local_dir(..., delete_stale=True)` drops `.archive_etag` as a stale
+file inside the tree. The archive stays at that fixed call count against
+real GCS. The stock cost scales with file count times round-trip time.
+
+The wall-clock figures above were measured on the previous sibling-marker
+build (`gcs_archive_bundle.GCSArchiveDagBundle`, same 400-file / ~3 MiB
+bundle, fake-gcs on localhost). This tip does not add a GCS call. `just bench`
+now imports `airflow.providers.google.cloud.bundles.gcs.GCSArchiveDagBundle`
+and checks that `.archive_etag` is inside the staged tree. Re-run `just e2e`
+to refresh the timings.
 
 Loopback fake-gcs makes each stock call about 2 ms, so 13.5× wall clock is
 the floor. The S3 reproduction of the same 400 files was ~16 s against
@@ -136,7 +151,8 @@ object. Neither number is a cloud bill: nothing left the machine.
 ## Poke around
 
 ```bash
-just logs    # how the DAG processor staged the two live bundles
+just check   # host unit test of the vendored module (in-tree marker, restage, prefix path)
+just logs    # how the DAG processor staged the two live bundles (archive staging is debug)
 just trace   # proxy access log (errors only; counts are in the benchmark)
 just bench 5 # more rounds
 curl -s localhost:18888/__metrics
@@ -148,7 +164,7 @@ The Airflow UI is at http://localhost:18080. Both bundles are configured in
 | | per-object | archive |
 |---|---|---|
 | name | `gcs-per-object` | `gcs-archive` |
-| classpath | `airflow.providers.google.cloud.bundles.gcs.GCSDagBundle` | `gcs_archive_bundle.GCSArchiveDagBundle` (provider classpath `airflow.providers.google.cloud.bundles.gcs.GCSArchiveDagBundle` when that class is installed) |
+| classpath | `airflow.providers.google.cloud.bundles.gcs.GCSDagBundle` | `airflow.providers.google.cloud.bundles.gcs.GCSArchiveDagBundle` |
 | source | `prefix`: `dags/` | `archive_object`: `archive/dag-bundle.tar.gz` |
 
 `GCSDagBundle` does not accept `archive_object`. `GCSArchiveDagBundle` does
@@ -165,22 +181,28 @@ expected.
 
 ## Where the behaviour lives upstream
 
-- [`GCSDagBundle.refresh()`](https://github.com/apache/airflow/blob/main/providers/google/src/airflow/providers/google/cloud/bundles/gcs.py)
-  → [`GCSHook.sync_to_local_dir()`](https://github.com/apache/airflow/blob/main/providers/google/src/airflow/providers/google/cloud/hooks/gcs.py):
+- [`GCSDagBundle._refresh_locked()`](https://github.com/aoelvp94/airflow/blob/acec0cfed761a04d3dabd7b5851662198c792882/providers/google/src/airflow/providers/google/cloud/bundles/gcs.py)
+  → [`GCSHook.sync_to_local_dir()`](https://github.com/apache/airflow/blob/providers-google/22.3.0/providers/google/src/airflow/providers/google/cloud/hooks/gcs.py):
   a serial `for blob in bucket.list_blobs(...)` loop, one blocking download
   per object. If the local file already exists, `_sync_to_local_dir_if_changed`
-  calls `blob.reload()` first. That class is unchanged here.
-- `GCSArchiveDagBundle` is the archive class proposed for
-  `airflow.providers.google.cloud.bundles.gcs` in
-  [apache/airflow#75566](https://github.com/apache/airflow/pull/75566),
+  calls `blob.reload()` first. The overlaid tip shares connection setup with
+  the archive class (`_get_logger`, `refresh` / `_refresh_locked`) and still
+  calls that hook. It does not unlink a sibling `.{name}/etag`.
+- `GCSArchiveDagBundle` is the archive class from
+  [apache/airflow#75566](https://github.com/apache/airflow/pull/75566) at
+  [`acec0cf`](https://github.com/aoelvp94/airflow/commit/acec0cfed761a04d3dabd7b5851662198c792882),
   following the `S3ArchiveDagBundle` split in
   [apache/airflow#73015](https://github.com/apache/airflow/pull/73015).
-  Until the provider ships it, the same shape lives in `bundle_pkg/`.
+  The verbatim file is `vendor/gcs.py`. The image overlays it onto the
+  provider module. Extract does not repeat the `tarfile` `data_filter`
+  check; construction already rejected interpreters without it.
 
 ## Layout
 
 ```
-bundle_pkg/            vendored GCSArchiveDagBundle (used until the provider class is installed)
+vendor/gcs.py          verbatim GCS bundle module from acec0cf (overlaid onto the provider)
+vendor/UPSTREAM.txt    source commit and sha256
+tests/test_vendored_gcs_bundle.py   host test (`just check`)
 scripts/generate_bundle.py   synthetic bundle generator (host, stdlib only)
 scripts/seed_gcs.py    upload both layouts to local fake-gcs
 scripts/gcs_proxy.py   counts GCS requests, then forwards to fake-gcs
@@ -192,9 +214,9 @@ justfile               all of the above, wired end to end
 
 The image installs `apache-airflow-providers-google==22.3.0` (the version
 pinned by Airflow 3.3.1 constraints) with `--no-deps`, then only the libraries
-`GCSDagBundle` imports. The per-object class is that upstream class. The
-archive class is the vendored `GCSArchiveDagBundle` until the provider ships
-`airflow.providers.google.cloud.bundles.gcs.GCSArchiveDagBundle`. The full
+the bundle module imports, then replaces
+`airflow.providers.google.cloud.bundles.gcs` with `vendor/gcs.py`. Both
+`GCSDagBundle` and `GCSArchiveDagBundle` come from that tip. The full
 provider also depends on Ray, pandas, and every Google product client; those
 are not imported by the bundle path and are not installed here.
 
@@ -206,10 +228,15 @@ are not imported by the bundle path and are not installed here.
 - Unpacking uses `tarfile` `filter="data"` (Python 3.11.4 or later).
   Constructing `GCSArchiveDagBundle` on an older interpreter raises
   `RuntimeError`.
-- The ETag marker is `.{bundle name}/etag`, next to the bundle directory.
-  Staging directories live there too, and leftover `archive-staging-*`
-  directories for this bundle are removed on refresh. An empty bundle
-  directory is restaged even when the marker still matches.
+- The ETag marker is `.archive_etag` inside the staged tree
+  (`{bundle directory}/.archive_etag`). It is not `.{bundle name}/etag`.
+- Staging directories live beside the tree, in `.{bundle name}/`. Leftover
+  `archive-staging-*` directories for this bundle are removed on refresh.
+  The prefix path does not unlink a sibling `etag` file. A prefix refresh
+  drops `.archive_etag` only because `delete_stale` removes files inside
+  the bundle directory that are not in the prefix.
+- An empty bundle directory, or one that contains only `.archive_etag`,
+  is restaged even when the remote ETag matches.
 - The download passes `if_generation_match` for the generation read with the
   ETag. A mismatch raises and leaves the previous tree in place.
 - The swap is two renames. A half-unpacked tree is not left behind. Between

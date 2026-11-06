@@ -1,0 +1,7 @@
+source: https://github.com/aoelvp94/airflow/blob/acec0cfed761a04d3dabd7b5851662198c792882/providers/google/src/airflow/providers/google/cloud/bundles/gcs.py
+commit: acec0cfed761a04d3dabd7b5851662198c792882
+branch: gcs-dag-bundle-archive-staging
+pull: https://github.com/apache/airflow/pull/75566
+sha256: dbcb996a175a3bd389216157a4485596b28f592902c748e3c0952953bc3c5fcd
+file: gcs.py
+note: verbatim copy; the image overlays this onto airflow.providers.google.cloud.bundles.gcs. The ETag marker is {gcs_dags_dir}/.archive_etag. GCSDagBundle does not unlink a sibling .{name}/etag.

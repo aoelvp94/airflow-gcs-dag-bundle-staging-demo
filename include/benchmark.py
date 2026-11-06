@@ -7,6 +7,16 @@ bundle's local directory first, simulating what every fresh worker pod
 experiences under KubernetesExecutor: an empty filesystem, so the full
 staging cost sits on the critical path of the task start.
 
+Both classes come from the provider module after the image overlays
+``vendor/gcs.py`` (aoelvp94/airflow acec0cf, apache/airflow#75566):
+
+    airflow.providers.google.cloud.bundles.gcs.GCSDagBundle          prefix=
+    airflow.providers.google.cloud.bundles.gcs.GCSArchiveDagBundle   archive_object=
+
+The archive ETag marker is ``.archive_etag`` inside the staged tree. Wiping
+``base_dir`` removes it. The prefix class does not unlink a sibling
+``.{name}/etag``.
+
 GCS request counts are read from the counting proxy in front of fake-gcs,
 so the numbers are what the storage server actually served.
 """
@@ -20,9 +30,9 @@ import sys
 import time
 import urllib.request
 
-from airflow.providers.google.cloud.bundles.gcs import GCSDagBundle
+from airflow.providers.google.cloud.bundles.gcs import GCSArchiveDagBundle, GCSDagBundle
 
-from gcs_archive_bundle import ARCHIVE_CLASSPATH, GCSArchiveDagBundle
+ARCHIVE_CLASSPATH = "airflow.providers.google.cloud.bundles.gcs.GCSArchiveDagBundle"
 
 METRICS_URL = "http://gcs-proxy:8888/__metrics"
 BUCKET = "dag-bundles"
@@ -48,9 +58,9 @@ def diff(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
 
 def run_cold(make_bundle) -> tuple[float, dict[str, int], int]:
     bundle = make_bundle()
-    # The archive ETag marker lives beside base_dir (.{name}/etag). Wiping only
-    # the bundle directory is the fresh-worker case: the marker can still match,
-    # and GCSArchiveDagBundle restages because the directory has no files.
+    # .archive_etag lives inside base_dir. Removing that directory removes the
+    # marker with the tree. Do not unlink a sibling ".{name}/etag": the prefix
+    # path has no such marker, and GCSDagBundle does not delete one.
     shutil.rmtree(bundle.base_dir, ignore_errors=True)
     before = gcs_request_counts()
     t0 = time.perf_counter()
@@ -63,6 +73,11 @@ def run_cold(make_bundle) -> tuple[float, dict[str, int], int]:
             break
         time.sleep(0.2)
     staged = sum(1 for path in bundle.path.rglob("*.py") if path.is_file())
+    if isinstance(bundle, GCSArchiveDagBundle):
+        marker = bundle.path / ".archive_etag"
+        sibling = bundle.base_dir.parent / f".{bundle.name}" / "etag"
+        if not marker.is_file() or sibling.exists():
+            raise SystemExit(f"expected in-tree marker {marker} and no sibling etag {sibling}")
     return elapsed, deltas, staged
 
 
